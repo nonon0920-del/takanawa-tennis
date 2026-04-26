@@ -2,9 +2,9 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>高輪テニスクラブ 参加管理</title>
+    <!-- スタイリングとアイコンのライブラリ -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script type="module">
@@ -12,6 +12,7 @@
         import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Firebase設定（ご提供いただいた情報を反映済み）
         const firebaseConfig = {
             apiKey: "AIzaSyD6Zd7D1DaT1WhiaZxEtJXVLFv56UJB6OE",
             authDomain: "takanawa-tennis.firebaseapp.com",
@@ -21,11 +22,13 @@
             appId: "1:935422531083:web:3ef126e647929f58b7d90e"
         };
 
+        // 初期化
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const appId = 'takanawa-tennis-v1';
 
+        // アプリの状態
         let user = null;
         let practiceDates = [];
         let allRegistrations = [];
@@ -33,119 +36,315 @@
         let recruitmentPhase = 1;
         let visibleParticipantsDateId = null;
 
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const adminToggle = document.getElementById('admin-toggle');
-        const adminPanel = document.getElementById('admin-panel');
-        const memberPanel = document.getElementById('member-panel');
-        const dateList = document.getElementById('date-list');
-        const adminDateList = document.getElementById('admin-date-list');
-        const phaseIndicator = document.getElementById('phase-indicator');
-        const phaseToggleBtn = document.getElementById('phase-toggle-btn');
+        // 匿名認証の開始
+        signInAnonymously(auth).catch(err => console.error("Firebase Auth Error:", err));
 
-        signInAnonymously(auth).catch(err => console.error("Auth Error:", err));
-
+        // 認証状態の監視
         onAuthStateChanged(auth, (u) => {
             user = u;
-            if (user) setupListeners();
+            if (user) {
+                setupListeners();
+            }
         });
 
+        // データのリアルタイム監視設定
         const setupListeners = () => {
             if (!user) return;
+
+            // 1. 練習日程の監視
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'practice_dates'), (snapshot) => {
-                practiceDates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => a.date.localeCompare(b.date));
+                practiceDates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+                    .sort((a, b) => a.date.localeCompare(b.date));
                 renderApp();
-            });
+            }, (error) => console.error("Firestore Error (dates):", error));
+
+            // 2. 申込データの監視
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), (snapshot) => {
                 allRegistrations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 myRegistrations = allRegistrations.filter(r => r.userId === user.uid);
                 renderApp();
-            });
+            }, (error) => console.error("Firestore Error (regs):", error));
+
+            // 3. フェーズ設定の監視
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), (snapshot) => {
                 if (snapshot.exists()) {
                     recruitmentPhase = snapshot.data().phase || 1;
                     renderApp();
                 } else {
+                    // 初期値の設定
                     setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { phase: 1 });
                 }
-            });
+            }, (error) => console.error("Firestore Error (settings):", error));
         };
 
+        // --- アクション関数 ---
+
+        // 管理者：日程追加
         window.addPracticeDate = async (e) => {
             e.preventDefault();
             const date = document.getElementById('new-date').value;
             const cap = parseInt(document.getElementById('new-cap').value) || 14;
             if (!date) return;
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'practice_dates'), { date, maxCapacity: cap });
-            e.target.reset();
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'practice_dates'), { date, maxCapacity: cap });
+                e.target.reset();
+            } catch (e) { alert("追加に失敗しました。権限を確認してください。"); }
         };
 
+        // 管理者：日程削除
         window.deleteDate = async (id) => {
-            if (confirm('削除しますか？')) {
+            if (confirm('この練習日と全ての参加データを削除しますか？')) {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'practice_dates', id));
-                allRegistrations.filter(r => r.dateId === id).forEach(async r => await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', r.id)));
+                // 関連する申込も削除（簡易ループ）
+                const related = allRegistrations.filter(r => r.dateId === id);
+                for (const r of related) {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', r.id));
+                }
             }
         };
 
+        // 参加者リストの表示切り替え
         window.toggleParticipants = (id) => {
             visibleParticipantsDateId = (visibleParticipantsDateId === id) ? null : id;
             renderApp();
         };
 
+        // 管理者：募集フェーズの変更
         window.togglePhase = async () => {
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { phase: recruitmentPhase === 1 ? 2 : 1 });
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { 
+                phase: recruitmentPhase === 1 ? 2 : 1 
+            });
         };
 
+        // メンバー：参加申し込み
         window.register = async (dateId) => {
-            if (recruitmentPhase === 1 && myRegistrations.length >= 2) return alert('第1次募集は2回までです。');
+            // 第1次フェーズの制限チェック
+            if (recruitmentPhase === 1 && myRegistrations.length >= 2) {
+                alert('第1次募集期間は、お一人様2回までとなります。');
+                return;
+            }
+
             const dateObj = practiceDates.find(d => d.id === dateId);
-            if (allRegistrations.filter(r => r.dateId === dateId).length >= dateObj.maxCapacity) return alert('満員です。');
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), { userId: user.uid, dateId, timestamp: Date.now() });
+            const currentRegs = allRegistrations.filter(r => r.dateId === dateId);
+            if (currentRegs.length >= dateObj.maxCapacity) {
+                alert('この日程は既に満員です。');
+                return;
+            }
+
+            // お名前の入力（localStorageから前回値を読み込み）
+            const storedName = localStorage.getItem('tennis_user_name') || "";
+            const userName = prompt("お名前（LINE名など）を入力してください", storedName);
+            
+            if (!userName || userName.trim() === "") {
+                alert('お名前を入力しないと申し込みできません。');
+                return;
+            }
+
+            // 名前を保存
+            localStorage.setItem('tennis_user_name', userName);
+
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), {
+                    userId: user.uid,
+                    userName: userName,
+                    dateId: dateId,
+                    timestamp: Date.now()
+                });
+            } catch (e) {
+                alert("登録に失敗しました。");
+            }
         };
 
+        // メンバー：キャンセル
         window.cancel = async (dateId) => {
             const reg = myRegistrations.find(r => r.dateId === dateId);
-            if (reg) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', reg.id));
+            if (reg && confirm('キャンセルしますか？')) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', reg.id));
+            }
         };
 
+        // --- 画面描画 ---
         const renderApp = () => {
-            loadingOverlay.classList.add('hidden');
+            document.getElementById('loading-overlay').classList.add('hidden');
+
+            // フェーズ表示
+            const phaseIndicator = document.getElementById('phase-indicator');
+            const phaseToggleBtn = document.getElementById('phase-toggle-btn');
             phaseIndicator.innerText = recruitmentPhase === 1 ? '第1次 募集期間（2回まで）' : '第2次 募集期間（制限なし）';
             phaseToggleBtn.innerText = recruitmentPhase === 1 ? '第2次募集へ切り替え' : '第1次募集へ戻す';
-            adminDateList.innerHTML = practiceDates.map(d => `<div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg mb-2 text-sm"><span class="font-bold">${d.date} (${allRegistrations.filter(r => r.dateId === d.id).length}/${d.maxCapacity})</span><button onclick="deleteDate('${d.id}')" class="text-red-400 p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>`).join('') || '<p class="text-center text-slate-400 text-xs py-4">日程なし</p>';
+
+            // 管理者用：登録済み日程リスト
+            const adminDateList = document.getElementById('admin-date-list');
+            adminDateList.innerHTML = practiceDates.map(d => `
+                <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg mb-2 text-sm border border-slate-100">
+                    <span class="font-bold text-slate-700">${d.date} (${allRegistrations.filter(r => r.dateId === d.id).length}/${d.maxCapacity}人)</span>
+                    <button onclick="deleteDate('${d.id}')" class="text-red-400 p-1 hover:text-red-600 transition-colors">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            `).join('') || '<p class="text-center text-slate-400 text-xs py-4 font-medium">登録された日程はありません</p>';
+
+            // メンバー用：メインリスト
+            const dateList = document.getElementById('date-list');
             dateList.innerHTML = practiceDates.map(d => {
                 const regs = allRegistrations.filter(r => r.dateId === d.id).sort((a, b) => a.timestamp - b.timestamp);
-                const registered = myRegistrations.some(r => r.dateId === d.id);
-                const full = regs.length >= d.maxCapacity;
+                const isMyReg = myRegistrations.some(r => r.dateId === d.id);
+                const isFull = regs.length >= d.maxCapacity;
                 const isExpanded = visibleParticipantsDateId === d.id;
-                return `<div class="bg-white border ${registered ? 'border-emerald-500 ring-1 ring-emerald-500' : 'border-slate-200'} rounded-xl p-4 shadow-sm mb-3"><div class="flex justify-between items-center mb-3"><div><h3 class="font-bold text-slate-800">${d.date}</h3><span class="text-[10px] px-2 py-0.5 rounded-full ${full ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}">空き: ${d.maxCapacity - regs.length} / ${d.maxCapacity}人</span></div><button onclick="toggleParticipants('${d.id}')" class="text-slate-400"><i data-lucide="${isExpanded ? 'users' : 'user-plus'}" class="w-5 h-5 ${isExpanded ? 'text-emerald-600' : ''}"></i></button></div>${isExpanded ? `<div class="mb-4 bg-slate-50 rounded-lg p-3 space-y-1">${regs.map((r, i) => `<div class="flex justify-between text-[11px] py-1 border-b border-white last:border-0"><span class="${r.userId === user.uid ? 'text-emerald-600 font-bold' : 'text-slate-600'}">${i + 1}. ID:${r.userId.slice(-6)} ${r.userId === user.uid ? '(あなた)' : ''}</span><span class="text-slate-300 text-[9px]">${new Date(r.timestamp).toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'})}</span></div>`).join('') || '<p class="text-[10px] text-slate-300">まだ参加者はいません</p>'}</div>` : ''}<button onclick="${registered ? 'cancel' : 'register'}('${d.id}')" ${!registered && full ? 'disabled' : ''} class="w-full py-2.5 rounded-lg font-bold text-sm transition-all ${registered ? 'bg-slate-100 text-slate-500' : (full ? 'bg-slate-50 text-slate-300' : 'bg-emerald-600 text-white shadow-md')}">${registered ? 'キャンセルする' : (full ? '満員です' : '参加する')}</button></div>`;
-            }).join('') || '<p class="text-center text-slate-400 py-10">募集中の日程はありません</p>';
+
+                return `
+                    <div class="bg-white border ${isMyReg ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-slate-200'} rounded-2xl p-4 shadow-sm mb-4 transition-all overflow-hidden">
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <h3 class="font-black text-lg text-slate-800 tracking-tight">${d.date}</h3>
+                                <div class="flex gap-2 mt-1">
+                                    <span class="text-[10px] px-2 py-0.5 rounded-full font-bold ${isFull ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-700'}">
+                                        空き: ${d.maxCapacity - regs.length} / ${d.maxCapacity}人
+                                    </span>
+                                </div>
+                            </div>
+                            <button onclick="toggleParticipants('${d.id}')" class="p-2 rounded-xl transition-colors ${isExpanded ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-400 hover:text-slate-600'}">
+                                <i data-lucide="users" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+
+                        <!-- 参加者リスト表示 -->
+                        ${isExpanded ? `
+                            <div class="mb-4 bg-slate-50/80 rounded-xl p-3 border border-slate-100 space-y-1.5 animate-in slide-in-from-top-1 duration-200">
+                                <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                                    <i data-lucide="info" class="w-3 h-3"></i> 参加予約リスト
+                                </h4>
+                                <div class="grid grid-cols-1 gap-1">
+                                    ${regs.map((r, i) => `
+                                        <div class="flex justify-between items-center text-xs py-1.5 px-2 bg-white rounded-lg border border-slate-50">
+                                            <span class="${r.userId === user.uid ? 'text-emerald-600 font-bold' : 'text-slate-600'} flex items-center gap-1.5">
+                                                <span class="text-[9px] w-4 text-slate-300 font-mono">${i + 1}</span>
+                                                ${r.userName || '匿名参加者'}
+                                                ${r.userId === user.uid ? '<span class="text-[8px] bg-emerald-500 text-white px-1 rounded">あなた</span>' : ''}
+                                            </span>
+                                            <span class="text-[9px] text-slate-300 font-mono">${new Date(r.timestamp).toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'})}</span>
+                                        </div>
+                                    `).join('') || '<p class="text-xs text-slate-400 text-center py-2">まだ参加者はいません</p>'}
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        <button onclick="${isMyReg ? 'cancel' : 'register'}('${d.id}')" ${!isMyReg && isFull ? 'disabled' : ''} 
+                                class="w-full py-3 rounded-xl font-black text-sm transition-all transform active:scale-95 ${isMyReg ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : (isFull ? 'bg-slate-50 text-slate-300 cursor-not-allowed' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-700')}">
+                            ${isMyReg ? 'キャンセルする' : (isFull ? '満員御礼' : '参加を申し込む')}
+                        </button>
+                    </div>
+                `;
+            }).join('') || '<p class="text-center text-slate-400 py-16 font-medium">現在募集中の日程はありません</p>';
+            
+            // アイコンの再描画
             lucide.createIcons();
         };
 
-        adminToggle.addEventListener('change', (e) => {
-            adminPanel.classList.toggle('hidden', !e.target.checked);
-            memberPanel.classList.toggle('hidden', e.target.checked);
+        // 管理者切り替え処理
+        document.addEventListener('DOMContentLoaded', () => {
+            const toggle = document.getElementById('admin-toggle');
+            toggle.addEventListener('change', (e) => {
+                document.getElementById('admin-panel').classList.toggle('hidden', !e.target.checked);
+                document.getElementById('member-panel').classList.toggle('hidden', e.target.checked);
+            });
         });
     </script>
     <style>
-        body { font-family: -apple-system, sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            -webkit-tap-highlight-color: transparent; 
+        }
         .hidden { display: none; }
+        @keyframes fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-in { animation: fade-in 0.2s ease-out; }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen">
-    <div id="loading-overlay" class="fixed inset-0 bg-white z-50 flex items-center justify-center"><div class="animate-spin rounded-full h-8 w-8 border-t-2 border-emerald-600"></div></div>
-    <header class="bg-white border-b border-slate-200 sticky top-0 z-40 px-4 h-14 flex justify-between items-center shadow-sm">
-        <h1 class="font-bold text-slate-800">高輪テニスクラブ</h1>
-        <label class="flex items-center cursor-pointer"><input type="checkbox" id="admin-toggle" class="sr-only peer"><div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div><span class="ml-2 text-[10px] font-bold text-slate-400">管理者モード</span></label>
+<body class="bg-slate-50 text-slate-900 min-h-screen pb-20">
+    <!-- ローディング表示 -->
+    <div id="loading-overlay" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-3">
+            <div class="animate-spin rounded-full h-10 w-10 border-4 border-slate-100 border-t-emerald-600"></div>
+            <p class="text-xs font-bold text-slate-400 animate-pulse">読み込み中...</p>
+        </div>
+    </div>
+
+    <!-- ヘッダー -->
+    <header class="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-40 px-4 h-16 flex justify-between items-center">
+        <div>
+            <h1 class="font-black text-slate-800 text-lg leading-none">高輪テニスクラブ</h1>
+            <p class="text-[9px] font-bold text-slate-400 uppercase tracking-tighter mt-1">Attendance Management System</p>
+        </div>
+        <label class="flex items-center cursor-pointer group">
+            <input type="checkbox" id="admin-toggle" class="sr-only peer">
+            <div class="w-10 h-6 bg-slate-200 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-4 relative"></div>
+            <span class="ml-2 text-[10px] font-black text-slate-400 peer-checked:text-emerald-600 transition-colors">設定</span>
+        </label>
     </header>
+
     <main class="max-w-md mx-auto p-4 space-y-6">
-        <div id="phase-indicator" class="bg-emerald-600 text-white p-3 rounded-xl shadow-md text-sm font-bold text-center"></div>
-        <div id="member-panel" class="space-y-4"><h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest">練習日程</h2><div id="date-list"></div></div>
+        <!-- 募集フェーズ表示 -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 flex items-center gap-4">
+            <div class="h-12 w-12 bg-emerald-600 rounded-xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-emerald-600/20">
+                <i data-lucide="megaphone" class="w-6 h-6"></i>
+            </div>
+            <div>
+                <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">現在の募集状況</p>
+                <div id="phase-indicator" class="font-black text-slate-800"></div>
+            </div>
+        </div>
+
+        <!-- メンバー用画面 -->
+        <div id="member-panel" class="space-y-4">
+            <h2 class="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">練習日程一覧</h2>
+            <div id="date-list"></div>
+        </div>
+
+        <!-- 管理者用画面 -->
         <div id="admin-panel" class="hidden space-y-6">
-            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"><h3 class="font-bold text-sm text-slate-800 text-center">募集フェーズ管理</h3><button id="phase-toggle-btn" onclick="togglePhase()" class="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold shadow-lg"></button></div>
-            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"><h3 class="font-bold text-sm text-slate-800">日程を追加</h3><form onsubmit="addPracticeDate(event)" class="space-y-3"><input type="date" id="new-date" class="w-full p-3 bg-slate-50 border rounded-xl text-sm"><input type="number" id="new-cap" value="14" class="w-full p-3 bg-slate-50 border rounded-xl text-sm" placeholder="定員"><button type="submit" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm">追加する</button></form></div>
-            <div class="space-y-2"><h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">登録済み日程</h3><div id="admin-date-list" class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm"></div></div>
+            <!-- フェーズ管理 -->
+            <div class="bg-slate-800 text-white p-6 rounded-3xl shadow-xl space-y-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <i data-lucide="settings-2" class="w-5 h-5 text-emerald-400"></i>
+                    <h3 class="font-black text-sm">募集フェーズの変更</h3>
+                </div>
+                <p class="text-xs text-slate-400 leading-relaxed">
+                    第1次募集：1人2回まで。公平に枠を確保します。<br>
+                    第2次募集：回数制限を解除します。
+                </p>
+                <button id="phase-toggle-btn" onclick="togglePhase()" class="w-full py-3 bg-white text-slate-900 rounded-xl text-xs font-black shadow-lg hover:bg-emerald-50 transition-colors"></button>
+            </div>
+            
+            <!-- 日程追加 -->
+            <div class="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <i data-lucide="calendar-plus" class="w-5 h-5 text-emerald-600"></i>
+                    <h3 class="font-black text-sm text-slate-800">新しい日程を追加</h3>
+                </div>
+                <form onsubmit="addPracticeDate(event)" class="space-y-3">
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">日付</label>
+                        <input type="date" id="new-date" class="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">定員（名）</label>
+                        <input type="number" id="new-cap" value="14" class="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all" required>
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-black text-sm shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all">日程を公開する</button>
+                </form>
+            </div>
+
+            <!-- 削除リスト -->
+            <div class="space-y-2">
+                <h3 class="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">公開中の日程管理</h3>
+                <div id="admin-date-list" class="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm"></div>
+            </div>
         </div>
     </main>
+
+    <!-- フッター装飾 -->
+    <footer class="max-w-md mx-auto px-4 py-8 text-center">
+        <p class="text-[10px] font-bold text-slate-300">© 2024 Takanawa Tennis Club Attendance System</p>
+    </footer>
 </body>
 </html>
