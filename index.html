@@ -12,15 +12,14 @@
         import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 【重要】Firebase Consoleから取得した自分の設定に書き換えてください
-  const firebaseConfig = {
-    apiKey: "AIzaSyD6Zd7D1DaT1WhiaZxEtJXVLFv56UJB6OE",
-    authDomain: "takanawa-tennis.firebaseapp.com",
-    projectId: "takanawa-tennis",
-    storageBucket: "takanawa-tennis.firebasestorage.app",
-    messagingSenderId: "935422531083",
-    appId: "1:935422531083:web:3ef126e647929f58b7d90e"
-  };
+        const firebaseConfig = {
+            apiKey: "AIzaSyD6Zd7D1DaT1WhiaZxEtJXVLFv56UJB6OE",
+            authDomain: "takanawa-tennis.firebaseapp.com",
+            projectId: "takanawa-tennis",
+            storageBucket: "takanawa-tennis.firebasestorage.app",
+            messagingSenderId: "935422531083",
+            appId: "1:935422531083:web:3ef126e647929f58b7d90e"
+        };
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -29,9 +28,10 @@
 
         let user = null;
         let practiceDates = [];
-        let myRegistrations = [];
         let allRegistrations = [];
+        let myRegistrations = [];
         let recruitmentPhase = 1;
+        let visibleParticipantsDateId = null;
 
         const loadingOverlay = document.getElementById('loading-overlay');
         const adminToggle = document.getElementById('admin-toggle');
@@ -42,41 +42,24 @@
         const phaseIndicator = document.getElementById('phase-indicator');
         const phaseToggleBtn = document.getElementById('phase-toggle-btn');
 
-        // 匿名認証を開始
         signInAnonymously(auth).catch(err => console.error("Auth Error:", err));
 
-        // 認証状態を監視し、ログイン完了後にデータを取得
         onAuthStateChanged(auth, (u) => {
             user = u;
-            if (user) {
-                setupListeners();
-            }
+            if (user) setupListeners();
         });
 
         const setupListeners = () => {
             if (!user) return;
-            const errorLog = (e) => {
-                console.error("Firestore Error:", e);
-                if (e.code === 'permission-denied') {
-                    alert("アクセス権限エラー：Firebaseの「Rules」設定を確認してください。");
-                }
-            };
-
-            // 1. 練習日程の取得
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'practice_dates'), (snapshot) => {
-                practiceDates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-                    .sort((a, b) => a.date.localeCompare(b.date));
+                practiceDates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => a.date.localeCompare(b.date));
                 renderApp();
-            }, errorLog);
-
-            // 2. 参加申し込み状況の取得
+            });
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), (snapshot) => {
                 allRegistrations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 myRegistrations = allRegistrations.filter(r => r.userId === user.uid);
                 renderApp();
-            }, errorLog);
-
-            // 3. 募集フェーズの取得
+            });
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), (snapshot) => {
                 if (snapshot.exists()) {
                     recruitmentPhase = snapshot.data().phase || 1;
@@ -84,45 +67,39 @@
                 } else {
                     setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { phase: 1 });
                 }
-            }, errorLog);
+            });
         };
 
         window.addPracticeDate = async (e) => {
             e.preventDefault();
             const date = document.getElementById('new-date').value;
-            const cap = parseInt(document.getElementById('new-cap').value) || 12;
+            const cap = parseInt(document.getElementById('new-cap').value) || 14;
             if (!date) return;
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'practice_dates'), { date, maxCapacity: cap });
             e.target.reset();
         };
 
         window.deleteDate = async (id) => {
-            if (confirm('この練習日を削除しますか？')) {
+            if (confirm('削除しますか？')) {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'practice_dates', id));
+                allRegistrations.filter(r => r.dateId === id).forEach(async r => await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'registrations', r.id)));
             }
+        };
+
+        window.toggleParticipants = (id) => {
+            visibleParticipantsDateId = (visibleParticipantsDateId === id) ? null : id;
+            renderApp();
         };
 
         window.togglePhase = async () => {
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { 
-                phase: recruitmentPhase === 1 ? 2 : 1 
-            });
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { phase: recruitmentPhase === 1 ? 2 : 1 });
         };
 
         window.register = async (dateId) => {
-            if (recruitmentPhase === 1 && myRegistrations.length >= 2) {
-                alert('第1次募集期間は、お一人様2回までとなります。');
-                return;
-            }
+            if (recruitmentPhase === 1 && myRegistrations.length >= 2) return alert('第1次募集は2回までです。');
             const dateObj = practiceDates.find(d => d.id === dateId);
-            if (allRegistrations.filter(r => r.dateId === dateId).length >= dateObj.maxCapacity) {
-                alert('この日程は既に満員です。');
-                return;
-            }
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), {
-                userId: user.uid,
-                dateId: dateId,
-                timestamp: Date.now()
-            });
+            if (allRegistrations.filter(r => r.dateId === dateId).length >= dateObj.maxCapacity) return alert('満員です。');
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'registrations'), { userId: user.uid, dateId, timestamp: Date.now() });
         };
 
         window.cancel = async (dateId) => {
@@ -132,41 +109,16 @@
 
         const renderApp = () => {
             loadingOverlay.classList.add('hidden');
-            phaseIndicator.innerText = recruitmentPhase === 1 ? '第1次 募集期間（2回まで）' : '第2次 募集期間（3回以上可）';
+            phaseIndicator.innerText = recruitmentPhase === 1 ? '第1次 募集期間（2回まで）' : '第2次 募集期間（制限なし）';
             phaseToggleBtn.innerText = recruitmentPhase === 1 ? '第2次募集へ切り替え' : '第1次募集へ戻す';
-
-            adminDateList.innerHTML = practiceDates.map(d => `
-                <div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg mb-2 text-sm">
-                    <span class="font-bold text-slate-700">${d.date} (${allRegistrations.filter(r => r.dateId === d.id).length}/${d.maxCapacity}名)</span>
-                    <button onclick="deleteDate('${d.id}')" class="text-red-400 p-1 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                </div>
-            `).join('') || '<p class="text-center text-slate-400 text-xs py-4">登録された日程はありません</p>';
-
+            adminDateList.innerHTML = practiceDates.map(d => `<div class="flex justify-between items-center p-3 bg-slate-50 rounded-lg mb-2 text-sm"><span class="font-bold">${d.date} (${allRegistrations.filter(r => r.dateId === d.id).length}/${d.maxCapacity})</span><button onclick="deleteDate('${d.id}')" class="text-red-400 p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>`).join('') || '<p class="text-center text-slate-400 text-xs py-4">日程なし</p>';
             dateList.innerHTML = practiceDates.map(d => {
-                const regs = allRegistrations.filter(r => r.dateId === d.id);
+                const regs = allRegistrations.filter(r => r.dateId === d.id).sort((a, b) => a.timestamp - b.timestamp);
                 const registered = myRegistrations.some(r => r.dateId === d.id);
                 const full = regs.length >= d.maxCapacity;
-                const isExtra = myRegistrations.length >= 3 && !registered;
-
-                return `
-                    <div class="bg-white border ${registered ? 'border-emerald-500 ring-1 ring-emerald-500' : 'border-slate-200'} rounded-xl p-4 shadow-sm transition-all">
-                        <div class="flex justify-between items-center mb-3">
-                            <div>
-                                <h3 class="font-bold text-slate-800">${d.date}</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="text-[10px] px-2 py-0.5 rounded-full ${full ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}">空き: ${d.maxCapacity - regs.length}</span>
-                                    ${isExtra ? '<span class="text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full font-bold">追加料金あり</span>' : ''}
-                                </div>
-                            </div>
-                            ${registered ? '<i data-lucide="check-circle-2" class="text-emerald-500 w-5 h-5"></i>' : ''}
-                        </div>
-                        <button onclick="${registered ? 'cancel' : 'register'}('${d.id}')" ${!registered && full ? 'disabled' : ''} 
-                                class="w-full py-2 rounded-lg font-bold text-sm transition-all ${registered ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : (full ? 'bg-slate-50 text-slate-300' : 'bg-emerald-600 text-white hover:bg-emerald-700')}">
-                            ${registered ? 'キャンセル' : (full ? '満員' : '参加を申し込む')}
-                        </button>
-                    </div>
-                `;
-            }).join('') || '<p class="text-center text-slate-400 py-10">現在募集中の練習日程はありません</p>';
+                const isExpanded = visibleParticipantsDateId === d.id;
+                return `<div class="bg-white border ${registered ? 'border-emerald-500 ring-1 ring-emerald-500' : 'border-slate-200'} rounded-xl p-4 shadow-sm mb-3"><div class="flex justify-between items-center mb-3"><div><h3 class="font-bold text-slate-800">${d.date}</h3><span class="text-[10px] px-2 py-0.5 rounded-full ${full ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}">空き: ${d.maxCapacity - regs.length} / ${d.maxCapacity}人</span></div><button onclick="toggleParticipants('${d.id}')" class="text-slate-400"><i data-lucide="${isExpanded ? 'users' : 'user-plus'}" class="w-5 h-5 ${isExpanded ? 'text-emerald-600' : ''}"></i></button></div>${isExpanded ? `<div class="mb-4 bg-slate-50 rounded-lg p-3 space-y-1">${regs.map((r, i) => `<div class="flex justify-between text-[11px] py-1 border-b border-white last:border-0"><span class="${r.userId === user.uid ? 'text-emerald-600 font-bold' : 'text-slate-600'}">${i + 1}. ID:${r.userId.slice(-6)} ${r.userId === user.uid ? '(あなた)' : ''}</span><span class="text-slate-300 text-[9px]">${new Date(r.timestamp).toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'})}</span></div>`).join('') || '<p class="text-[10px] text-slate-300">まだ参加者はいません</p>'}</div>` : ''}<button onclick="${registered ? 'cancel' : 'register'}('${d.id}')" ${!registered && full ? 'disabled' : ''} class="w-full py-2.5 rounded-lg font-bold text-sm transition-all ${registered ? 'bg-slate-100 text-slate-500' : (full ? 'bg-slate-50 text-slate-300' : 'bg-emerald-600 text-white shadow-md')}">${registered ? 'キャンセルする' : (full ? '満員です' : '参加する')}</button></div>`;
+            }).join('') || '<p class="text-center text-slate-400 py-10">募集中の日程はありません</p>';
             lucide.createIcons();
         };
 
@@ -176,51 +128,23 @@
         });
     </script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { font-family: -apple-system, sans-serif; -webkit-tap-highlight-color: transparent; }
         .hidden { display: none; }
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen">
-    <div id="loading-overlay" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
-        <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-emerald-600"></div>
-    </div>
-
+    <div id="loading-overlay" class="fixed inset-0 bg-white z-50 flex items-center justify-center"><div class="animate-spin rounded-full h-8 w-8 border-t-2 border-emerald-600"></div></div>
     <header class="bg-white border-b border-slate-200 sticky top-0 z-40 px-4 h-14 flex justify-between items-center shadow-sm">
         <h1 class="font-bold text-slate-800">高輪テニスクラブ</h1>
-        <label class="flex items-center cursor-pointer">
-            <input type="checkbox" id="admin-toggle" class="sr-only peer">
-            <div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
-            <span class="ml-2 text-[10px] font-bold text-slate-400">管理者モード</span>
-        </label>
+        <label class="flex items-center cursor-pointer"><input type="checkbox" id="admin-toggle" class="sr-only peer"><div class="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div><span class="ml-2 text-[10px] font-bold text-slate-400">管理者モード</span></label>
     </header>
-
     <main class="max-w-md mx-auto p-4 space-y-6">
         <div id="phase-indicator" class="bg-emerald-600 text-white p-3 rounded-xl shadow-md text-sm font-bold text-center"></div>
-
-        <div id="member-panel" class="space-y-4">
-            <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest">練習日程一覧</h2>
-            <div id="date-list" class="grid grid-cols-1 gap-3"></div>
-        </div>
-
+        <div id="member-panel" class="space-y-4"><h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest">練習日程</h2><div id="date-list"></div></div>
         <div id="admin-panel" class="hidden space-y-6">
-            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                <h3 class="font-bold text-sm text-slate-800">募集フェーズ管理</h3>
-                <button id="phase-toggle-btn" onclick="togglePhase()" class="w-full py-2 bg-slate-800 text-white rounded-xl text-sm font-bold"></button>
-            </div>
-            
-            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                <h3 class="font-bold text-sm text-slate-800">新しい練習日程を追加</h3>
-                <form onsubmit="addPracticeDate(event)" class="space-y-3">
-                    <input type="date" id="new-date" class="w-full p-3 bg-slate-50 border rounded-xl text-sm">
-                    <input type="number" id="new-cap" value="12" class="w-full p-3 bg-slate-50 border rounded-xl text-sm" placeholder="定員">
-                    <button type="submit" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm">追加する</button>
-                </form>
-            </div>
-
-            <div class="space-y-2">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">登録済み日程の削除</h3>
-                <div id="admin-date-list" class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm"></div>
-            </div>
+            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"><h3 class="font-bold text-sm text-slate-800 text-center">募集フェーズ管理</h3><button id="phase-toggle-btn" onclick="togglePhase()" class="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold shadow-lg"></button></div>
+            <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4"><h3 class="font-bold text-sm text-slate-800">日程を追加</h3><form onsubmit="addPracticeDate(event)" class="space-y-3"><input type="date" id="new-date" class="w-full p-3 bg-slate-50 border rounded-xl text-sm"><input type="number" id="new-cap" value="14" class="w-full p-3 bg-slate-50 border rounded-xl text-sm" placeholder="定員"><button type="submit" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm">追加する</button></form></div>
+            <div class="space-y-2"><h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">登録済み日程</h3><div id="admin-date-list" class="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm"></div></div>
         </div>
     </main>
 </body>
